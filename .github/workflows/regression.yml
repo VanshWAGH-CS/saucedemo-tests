@@ -1,0 +1,95 @@
+name: Playwright Regression Suite
+
+on:
+  push:
+    branches: [main, generated/**, feat/**]
+  pull_request:
+    branches: [main]
+
+  # Task 3.1 — workflow_dispatch: allows TestPilot platform to trigger runs via API
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "TestPilot TestRun ID (UUID) — written into test results for correlation"
+        required: false
+        default: ""
+      environment:
+        description: "Target environment name (e.g. staging, production)"
+        required: false
+        default: "staging"
+      test_tags:
+        description: "Playwright grep tag filter (e.g. @smoke or @login) — empty = run all"
+        required: false
+        default: ""
+      browser:
+        description: "Browser(s) to run against"
+        required: false
+        default: "chromium"
+        type: choice
+        options:
+          - chromium
+          - firefox
+          - webkit
+          - all
+
+jobs:
+  test:
+    name: Run Playwright Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Install Playwright Browsers
+        run: npx playwright install --with-deps ${{ github.event.inputs.browser == 'all' && '' || github.event.inputs.browser || 'chromium' }}
+
+      - name: Execute Playwright Tests
+        env:
+          # Correlate this run back to TestPilot's TestRun record
+          TESTPILOT_RUN_ID: ${{ github.event.inputs.run_id }}
+          TESTPILOT_ENVIRONMENT: ${{ github.event.inputs.environment || 'staging' }}
+          CI: true
+        run: |
+          # Build grep arg if test_tags input is provided
+          GREP_ARG=""
+          if [ -n "${{ github.event.inputs.test_tags }}" ]; then
+            GREP_ARG="--grep ${{ github.event.inputs.test_tags }}"
+          fi
+
+          # Build project arg — only run on specific browser when dispatch input given
+          PROJECT_ARG=""
+          if [ -n "${{ github.event.inputs.browser }}" ] && [ "${{ github.event.inputs.browser }}" != "all" ]; then
+            PROJECT_ARG="--project ${{ github.event.inputs.browser }}"
+          fi
+
+          npx playwright test $PROJECT_ARG $GREP_ARG \
+            --reporter=html,json,line \
+            --output=test-results
+
+      - name: Upload Test Report & Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-${{ github.run_id }}
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 30
+
+      - name: Upload JSON Report (for TestPilot result import)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-json-${{ github.run_id }}
+          path: playwright-report/results.json
+          retention-days: 30
